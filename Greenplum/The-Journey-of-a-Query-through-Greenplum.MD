@@ -1,98 +1,104 @@
+# The Journey of a Query through Greenplum Database
+
 This is a document try to explain the source code of Greenplum database.
 
-# Preface
+## Preface
 
 + **Objective** 
 
-    The purpose of this document is to explain the source code of Greenplum by following a query processing main flow. This approach try to pickup the critical functions and data structures from the source code, and the function also had been simplified to make it more easier to understand the logic. It serves as a source code reading guide.
+    The purpose of this document is to explain the source code of Greenplum by following a query processing main flow. This approach tries to pick up the critical functions and data structures from the source code, and the function also had been simplified to make it more easier to understand the logic. It serves as a source code reading guide.
 
     This is not a full design document or full source code analysis. Though the internal and design information of Greenplum is very limited, if you want to get to know more information about that, you can first read the internal document of Postgres in [PostgreSQL Official Document](http://www.postgresql.org/docs/9.5/static/internals.html), or the papers about HAWQ: [HAWQ: a massively parallel processing SQL engine in hadoop.](https://github.com/changleicn/publications/raw/master/hawq-sigmod-2014.pdf).
 
 + **Target software**
 
-    Greenplum 4.3.6
+    + Greenplum 4.3.6
 
-    Source code in Github:[Greenplum](https://github.com/greenplum-db/gpdb)
+    + Source code in Github:[Greenplum](https://github.com/greenplum-db/gpdb)
 
-    Official website: [Greenplum Site](http://greenplum.org/)
+    + Official website: [Greenplum Site](http://greenplum.org/)
  
 + **License**
 
-    This document is under Creative Commons license BY. 
+    + This document is under Creative Commons license BY. 
 
 + **Author** 
   
-    Author: Galy Lee (galylee at gmail dot com)
+    + Author: Galy Lee (galylee at gmail dot com)
 
-    Also it belongs to a sub project of [Codeasy](https://github.com/galylee/codeasy/) which is aiming to document the source code of opensource projects, please feel free to contribute to our project.
-
-
+    + Also it belongs to a sub project of [Codeasy](https://github.com/galylee/codeasy/) which is aiming to document the source code of opensource projects, please feel free to contribute to our project.
 
 ## Architecture overview 
 
-Greenplum has one **master** and multiple **segments**, actual data is distributed by Hash or round robin in segments, and master is the interface to the client. It accept requests from client and dispatches sub plans to segments, segments get the data from disk and send back to master. Finally master assemble the result and return to client.
+Greenplum is a typical share-nothing architecture MPP data base, it has one **master** and multiple **segments**, actual data is distributed by Hash or round robin in segments, and master is the interface to the client. 
 
-- Nodes
+- **Nodes**
 
-    **Master node**(one Primary, one Standby)
+    - _Master node_
 
-    **Segment node** (Multiple segments, each segement has one primary and one mirroring site)
+         There is on one Primary master, master has one Standby, master ships its WAL to its standby for HA.
 
-- Processes
+    - _Segment node_
 
-    **Postmaster process**: Each GPDB instance has one postmaster process, it listens for connections from client and fork a backend processes
+        There are multiple segments, each segment has one primary and one mirroring site.
 
-    **Utility processes**: bgwriter(data writer), Stats Collector Process, ftsprobe(only master, hearbeat service), seqserver(only master, global sequence), Logger
+- **Processes**
 
-    **Backend processes**: QD(Session processes in Master, Query Dispatcher), QE(Session processes in Segment, Query Executor)
+    - _Postmaster process_
 
-+ MPP processing
+        Each GPDB instance has one postmaster process.
 
-+ Interconnect
+    - _Utility processes_ 
 
-+ The protocols
+           There are other utility processes for different functionalities:  bgwriter(data writer), Stats Collector Process, ftsprobe(only master, heartbeat service), seqserver(only master, global sequence), Logger
 
-+ Storage
+    - _Backend processes_
 
-+ HA
+           Master listens for connections from client and fork a backend processes to handle the request, the backend processes in master is also called QD(Query Dispatcher), there are also some worker process in segment to help to finish the request, it is called QE(Query Executor).
 
-+ Transaction
-
-+ A typical flow
-
-    Client connects to Postmaster on Master
+- **MPP processing**
     
-    Postmaster forks a new backend QD (Query Dispatcher process)
+     - _Motion_
+
+         In Greenplum, because data is distributed in segments, so segments need to ship their own portion of data to other nodes, it introduces an operator called Motion into the plan tree, the Motion operator is used to send or receive tuples from other nodes, it has three type of operations: Gather motion, Broadcast motion, Redistribute motion. 
+
+     - _Slice_ 
+
+        The plan is divided into multiple slices by the Motion operator. One slice is a portion of plan which can be executed independently in on node. A distributed plan has multiple slices.
+
+     - _Gang_
+
+       One slice may need segments to finish, so every segment need a worker QE for it. All of the QEs for one slice in the cluster is call Gang. 
+
+
+- **A Typical Query Processing Flow**
+
+    Master accepts request from client and dispatches sub plans to segments, segments get the data from disk and send back to master. Finally master return to client.
+
+    - Master listens on its port, client connects to Postmaster on Master
     
-    QD connects to each segment via postmaster
+    - Postmaster forks a new backend QD (Query Dispatcher process)
+        
+    - Client submits its query to the QD
 
-    Postmaster on each segment forks initial QE writer process
+    - QD parses query , then do analysis and rewrite 
 
-    Client submits an SQL to the QD
+    - QD performs query planning
 
-    QD parses query and generates parse tree
+    - QD prepares for plan execution(setup gangs, brings up QEs and setup interconnects) 
 
-    QD optimizes parse tree and generates query plan
+    - QD dispatches the plan to QE processes
 
-    QD allocates (DTM) Distributed transaction ID and Distributed snapshot
+    - QE prepares for the execution
+ 
+    - QE execute portion of query plan
 
-    QD starts QE reader processes according to Query plan
-
-    QD and QEs configure interconnect according to Query plan
-
-   QD dispatches to QE processess command with
-
-   QE writer Create local snapshot, Create local transaction ID
-
-   Communicate with QE readers about snapshot
-
-   execute distinct portion of query plan
+    - QEs exchanges data when executing the plan
    
-   response back to QD when done
+    - QE get the result and response back to QD when done
 
-Like Postgres, Greenplum is using process model. The master listens on its port, it forks a new process to handle the connection request from client.
 
-## Master main entry
+## Master listens on its port, client connects to Postmaster on Master
 
 
 The main entry of master is in **PostmasterMain()**.
@@ -103,7 +109,6 @@ _**Main**_
     |--Main()
     |--|--PostmasterMain()
 ```
-
 
 ServerLoop() is the main idle loop of master.
 
@@ -124,8 +129,11 @@ _**PostmasterMain**_
               }		
           }
 ```
+## Postmaster forks a new backend QD (Query Dispatcher process)
 
-When a connection comes, master fork a process in BackendStartup(), and do the client authentication. The new process is usally called as **backend**. Each new connection corresponds to a **backend**.
+Like Postgres, Greenplum is using process model. The master listens on its port, it forks a new process to handle the connection request from client.
+
+When a connection comes, master forks a process in BackendStartup(), and do the client authentication. The new process is usually called as **backend**. Each new connection corresponds to a **backend**.
 
 _**BackendStartup**_
 ```C
@@ -144,11 +152,9 @@ _**BackendStartup**_
      }
 ```
 
-## QD(Master Query Dispatcher)：Backend Process
+## Client submits its query to the QD
 
-### Backend main entry
-
-After the **backend process** had been forked, it enters a loop in **PostgresMain()** to accept commands or query from client.  When client sends **query** to the backend, backend reads the query out by **ReadCommand()**, and dispatchs it to proper function according to its **first char**.The meaning of the first char is defined by the **frontend/backend protocol**. For example 'Q' means the comand is a simple query from the frontend,  it is routed to **exec_simple_query()** for handling. 
+After the **backend process** had been forked, it enters a loop in **PostgresMain()** to accept commands or query from client.  When client sends **query** to the backend, backend reads the query out by **ReadCommand()**, and dispatches it to proper function according to its **first char**.The meaning of the first char is defined by the **frontend/backend protocol**. For example 'Q' means the command is a simple query from the frontend,  it is routed to **exec_simple_query()** for handling. 
 
 _**PostgresMain**_
 ```C
@@ -203,11 +209,10 @@ Comparing with Postgres, Greenplum had added three messages, all of them are rel
 ```
 
 
-### QD query processing
+**QD query processing**
 
-**exec_simple_query** do most of the query processing work. As you know, the query is in SQL standard format, the backend need to parse, analyze, rewrite, and plan the query, and do the execution according the plan, finally send the result tuples back to the client.
+**exec_simple_query** does most of the query processing work. The query is in SQL standard format, the backend need to parse, analyze, rewrite, and plan the query, and do the execution according the plan, finally sends the result tuples back to the client.
 
-_**exec_simple_query**_
 ```C
     src/backend/tcop/postgres.c 
     |--exec_simple_query()
@@ -261,24 +266,19 @@ _**exec_simple_query**_
       }	
 ```
 
+## QD parses query , then do analysis and rewrite
 
-#### Query Parsing
 The query parsing is done by 
  `parsetree_list = pg_parse_query(query_string);`
 Given a query in string form, it do lexical and grammatical analysis, and return a parse tree.
 
-Postgres uses Flex/Bison as program interptreter to parse SQL query or command.
+Postgres uses Flex/Bison as program interpreter to parse SQL query or command.
 
-The task of discovering the source structure again is decomposed into subtasks: 
- 1. Split the source file into tokens (Flex). 
- 2. Find the hierarchical structure of the program (Bison).
+_**Flex**_: Split the source file into tokens
 
+flex is a tool for generating scanners: programs which recognized lexical patterns in text. 
 
-_**Flex**_
-
-flex is a tool for generating scanners: programs which recognized lexical patterns in text. flex reads the given input files, or its standard input if no file names are given, for a description of a scanner to generate.
-
-For example, in the following code, 'digit' is defined as the regular expression [0-9], token like 8989 is reconigzed as digit.
+For example, in the following code, 'digit' is defined as the regular expression [0-9], token like 8989 is recognized as digit.
 
 ```C
    gpdb/src/backend/parser/scan.l
@@ -291,7 +291,8 @@ For example, in the following code, 'digit' is defined as the regular expression
    ....
 ```
 
-_**Bison**_
+_**Bison**_: recognize the syntax
+
 Bison is a general-purpose parser generator.
 
 For example, a simple select has three parameters as following
@@ -300,7 +301,7 @@ For example, a simple select has three parameters as following
     FROM user                /* from_clause */
     Where username= 'JOHN' ' /* where_clause */
 ```
-A simple select statment is define in the following code. The Bison reconigzes the above statment and its parameters, and create a **SelectStmt** data structure, then fills the parameters in it.
+A simple select statement is define in the following code. The Bison recognizes the above statement and its parameters, and create a **SelectStmt** data structure, then fills the parameters in it.
 ```C
     src/backend/parser/gram.y 
     simple_select: 
@@ -320,7 +321,7 @@ A simple select statment is define in the following code. The Bison reconigzes t
                  $$ = (Node *)n; 
             } 
 ```
-The structure to hold the parse result is **SelectStmt**, all of the options in SELECT statment are defined. 
+The structure to hold the parse result is **SelectStmt**, all of the options in SELECT statement are defined. 
 
 _**SelectStmt**_
 ```C
@@ -374,7 +375,8 @@ Also rewrite the queries as necessary, in the rewrite, it fires the rules.
     }
 ```
 
-**transformStmt**
+**Transform Query**
+
 In the transformStmt(), `rte->relid = RelationGetRelid(rel);`, the relation id of source table is retrieved. 
 ```C
    src/backend/parser/analyze.c
@@ -392,7 +394,7 @@ In the transformStmt(), `rte->relid = RelationGetRelid(rel);`, the relation id o
 ```
 **Query struct**
 
-Query strcture hold the result of transformed parsing tree.
+Query structure hold the result of transformed parsing tree.
 
 ```C
 typedef struct Query 
@@ -415,7 +417,7 @@ typedef struct Query
 }
 ```
 
-#### Planning
+## QD performs query planning
 ```
 For example:
 
@@ -431,6 +433,7 @@ For example:
     {1 2 3 4}
     (other possibilities will be excluded for lack of join clauses)
 ```
+**Planner**
 
 The primary entry point is planner().
 ```C
@@ -489,27 +492,27 @@ set_base_rel_pathlist() finds seqscan and all index paths for each base relation
              }
 ```
 
-**seqscan_path**
+**Seqscan Path**
 
-It makes a T_SeqScan type node, and also it caculates the cost for the sequential scan in `cost_seqscan(pathnode, root, rel)` . 
+It makes a T_SeqScan type node, and also it calculates the cost for the sequential scan in `cost_seqscan(pathnode, root, rel)` . 
 
 ```C
-Path *
-create_seqscan_path(PlannerInfo *root, RelOptInfo *rel)
-{
-        Path	   *pathnode = makeNode(Path);
 
-        pathnode->pathtype = T_SeqScan;
- 
-        pathnode->locus = cdbpathlocus_from_baserel(root, rel);
- 
-        cost_seqscan(pathnode, root, rel);
+   |--create_seqscan_path(PlannerInfo *root, RelOptInfo *rel)
+      {
+          Path	   *pathnode = makeNode(Path);
 
-        return pathnode;
-}
+          pathnode->pathtype = T_SeqScan;
+ 
+          pathnode->locus = cdbpathlocus_from_baserel(root, rel);
+ 
+          cost_seqscan(pathnode, root, rel);
+
+          return pathnode;
+      }
 ```
 
-**find an optimal way to join all relations into one relation**
+**Find an optimal way to join all relations into one relation**
 
 We employ a simple "dynamic programming" algorithm: we first find all ways to build joins of two jointree items, then all ways to build joins of three items (from two-item joins and single items), then four-item joins, and so on until we have considered all ways to join all the items into one rel.
 
@@ -570,8 +573,11 @@ In merge join, it adds motion nodes above subpaths and decide where to join.
 
 ```
 
-#### Execution
-**_PortalStart_**
+## QD prepares for plan execution(setup gangs, brings up QEs and setup interconnects)
+
+
+**Execution Preparation**
+
 ```C
     |--PortalStart
     |--|--ExecutorStart(queryDesc, eflags);	
@@ -610,12 +616,9 @@ In merge join, it adds motion nodes above subpaths and decide where to join.
            }	
 ```		
 
-# 2. Segment
+##QD dispatches the plan to QE processes
 
-## QE：Backend Process
-
-### PostgresMain
-__**BackendRun**__
+__**QE Main**__
 ```C
 BackendRun
     PostgresMain
@@ -633,10 +636,9 @@ BackendRun
 
 ```
 
-### Query Processing
-_**exec_mpp_query**_
+_**MPP Query Processing**_
 
-When QE receives the plan dispatched from QD, it calls exec_mpp_query to handle it. Normally, a query need to go through the process of parse/analysis/rewrite/plan/execution/return result, but because the query had already been planned at QD, so it deserialize the query execution plan from QD, and excutes it, finnally it returns the result back to QD.
+When QE receives the plan dispatched from QD, it calls exec_mpp_query to handle it. Normally, a query need to go through the process of parse/analysis/rewrite/plan/execution/return result, but because the query had already been planned at QD, so it deserialize the query execution plan from QD, and executes it, finally it returns the result back to QD.
  
 ```C
 /*
@@ -694,10 +696,11 @@ exec_mpp_query
 }
 ```
 
-### Initialization
-_**PortalStart**_
+## QE receives the plan and prepares for the execution 
 
-Before the execution, the executor needs to do some initialization work. One of the noticable work is to setup the inter connect between segements for data transfer between them. 
+_**QE execution initialization**_
+
+Before the execution, the executor needs to do some initialization work. One of the noticeable work is to setup the inter connect between segments for data transfer between them. 
 
 ```C
 PortalStart
@@ -721,6 +724,8 @@ PortalStart
 ```
 EState is used to store the information about execution. The slices table and interconnection information are stored here.
 
+**Executor state**
+
 ```C
 typedef struct EState
 {
@@ -734,7 +739,9 @@ typedef struct EState
 
 }
 ```
-A distributed plan is divided into slices, a slice is an indepente executable portion of plan, each motion node create two slices. All of the slice in a plan are store in a slice table. Each slice has its index number and gang, which is the excuting nodes of the slice
+A distributed plan is divided into slices, a slice is an independent executable portion of plan, each motion node create two slices. All of the slice in a plan are store in a slice table. Each slice has its index number and gang, which is the executing nodes of the slice
+
+**Slice** 
 
 ```C
 typedef struct Slice
@@ -785,6 +792,7 @@ typedef struct Slice
 	List *primaryProcesses;
 } Slice;
 ```
+**Motion Node**
 
 ```C
 typedef struct MotionNodeEntry
@@ -811,6 +819,7 @@ typedef struct MotionNodeEntry
 	htup_fifo       ready_tuples;
 }
 ```
+**Inter Connect State**
 
 The connections of between motion peers are store in the ChunkTransportStateEntry.
 ```C
@@ -861,8 +870,9 @@ Before the exeuction, the interconnect needs to setup the outoing and incoming c
 
 ```
 
-### Query Execution
-_**PortalRun**_
+### QE execute portion of query plan
+
+_**QE Execution**_
 
 The actual execution of the plan is in PortalRun, a simple query is dispatched to ExecutePlan, but the DDL commands is dispatched to PortalRunUtility. 
 
@@ -883,9 +893,9 @@ PortalRun
 				   
 ```
 
-_**ExecutePlan**_
+_**Execute Plan**_
 
-Postgres Executor uses a demand-pull pipeline mechanism to process the whole plan tree. ExecProcNode pull one tuple from the top node in the plan, which recruisively execute its child nodes in the plan. 
+Postgres Executor uses a demand-pull pipeline mechanism to process the whole plan tree. ExecProcNode pull one tuple from the top node in the plan, which recursively execute its child nodes in the plan. 
 
 ```C
    ExecutePlan()	
@@ -923,6 +933,9 @@ Postgres Executor uses a demand-pull pipeline mechanism to process the whole pla
 
     }
 ```
+
+**Execution Node**
+
 ExecProcNode call different node handler according to its node type. 
 
 ```C
@@ -964,6 +977,9 @@ ExecProcNode call different node handler according to its node type.
            }
         }
 ```
+
+**NestLoop Node**
+
 For a NestLoop, it gets one tuple from outer node and then get another tuple from inner node, if two tuple satisfies qualification, it returns the joinned tuple. 
 
 ```C
@@ -1007,6 +1023,8 @@ For a NestLoop, it gets one tuple from outer node and then get another tuple fro
           }
       }
 ```
+**Scan Node**
+
 For a scan node, it calls the access method according its access method type.
 
 ```C
@@ -1039,7 +1057,10 @@ For a scan node, it calls the access method according its access method type.
        }
 
 ```
-_**ExecMotion**_
+
+## QEs exchanges data when executing the plan
+
+_**Motion Node**_
 ```C
    src/backend/executor/nodeMotion.c
    |--ExecMotion()
@@ -1065,6 +1086,7 @@ _**ExecMotion**_
            }
        }
 ```
+**Receive in Motion Node**
 
 ```C
     src/backend/executor/nodeMotion.c
@@ -1078,7 +1100,8 @@ _**ExecMotion**_
              *tup_i = htfifo_gettuple(pMNEntry->ready_tuples);
           }
 ```
-### Send the result back
+### QE get the result and response back to QD when done
+
 
 _**CreateDestReceiver**_
 ```C						
