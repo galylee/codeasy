@@ -30,8 +30,67 @@ This is a document try to explain the source code of Greenplum database.
 
 ## Architecture overview 
 
-Greenplum has one **master** and multiple **segments**, actual data is stored in segments, and master accept requests from client and dispatches sub plans to segments, segments get the data from disk and send back to master. Finally master assemble the result and return to client.   
+Greenplum has one **master** and multiple **segments**, actual data is distributed by Hash or round robin in segments, and master is the interface to the client. It accept requests from client and dispatches sub plans to segments, segments get the data from disk and send back to master. Finally master assemble the result and return to client.
 
+- Nodes
+
+    **Master node**(one Primary, one Standby)
+
+    **Segment node** (Multiple segments, each segement has one primary and one mirroring site)
+
+- Processes
+
+    **Postmaster process**: Each GPDB instance has one postmaster process, it listens for connections from client and fork a backend processes
+
+    **Utility processes**: bgwriter(data writer), Stats Collector Process, ftsprobe(only master, hearbeat service), seqserver(only master, global sequence), Logger
+
+    **Backend processes**: QD(Session processes in Master, Query Dispatcher), QE(Session processes in Segment, Query Executor)
+
++ MPP processing
+
++ Interconnect
+
++ The protocols
+
++ Storage
+
++ HA
+
++ Transaction
+
++ A typical flow
+
+    Client connects to Postmaster on Master
+    
+    Postmaster forks a new backend QD (Query Dispatcher process)
+    
+    QD connects to each segment via postmaster
+
+    Postmaster on each segment forks initial QE writer process
+
+    Client submits an SQL to the QD
+
+    QD parses query and generates parse tree
+
+    QD optimizes parse tree and generates query plan
+
+    QD allocates (DTM) Distributed transaction ID and Distributed snapshot
+
+    QD starts QE reader processes according to Query plan
+
+    QD and QEs configure interconnect according to Query plan
+
+   QD dispatches to QE processess command with
+
+   QE writer Create local snapshot, Create local transaction ID
+
+   Communicate with QE readers about snapshot
+
+   execute distinct portion of query plan
+   
+   response back to QD when done
+
+Like Postgres, Greenplum is using process model. The master listens on its port, it forks a new process to handle the connection request from client.
 
 ## Master main entry
 
@@ -44,7 +103,7 @@ _**Main**_
     |--Main()
     |--|--PostmasterMain()
 ```
-Like Postgres, Greenplum is using process model. The master listens on its port, it forks a new process to handle the connection request from client.
+
 
 ServerLoop() is the main idle loop of master.
 
@@ -85,7 +144,7 @@ _**BackendStartup**_
      }
 ```
 
-## QD：Backend Process
+## QD(Master Query Dispatcher)：Backend Process
 
 ### Backend main entry
 
