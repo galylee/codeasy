@@ -6,7 +6,7 @@ This is a document try to explain the source code of Greenplum database.
 
 + **Objective** 
 
-    The purpose of this document is to explain the source code of Greenplum by following a query processing main flow. This approach tries to pick up the critical functions and data structures from the source code, and the function also had been simplified to make it more easier to understand the logic. It serves as a source code reading guide.
+    The purpose of this document is to explain the source code of Greenplum by following a query processing main flow. This approach tries to pick up the critical functions and data structures from the source code, and the functions also had been simplified to make it more easier to be understood. It serves as a source code reading guide.
 
     This is not a full design document or full source code analysis. Though the internal and design information of Greenplum is very limited, if you want to get to know more information about that, you can first read the internal document of Postgres in [PostgreSQL Official Document](http://www.postgresql.org/docs/9.5/static/internals.html), or the papers about HAWQ: [HAWQ: a massively parallel processing SQL engine in hadoop.](https://github.com/changleicn/publications/raw/master/hawq-sigmod-2014.pdf).
 
@@ -26,17 +26,16 @@ This is a document try to explain the source code of Greenplum database.
   
     + Author: Galy Lee (galylee at gmail dot com)
 
-    + Also it belongs to a sub project of [Codeasy](https://github.com/galylee/codeasy/) which is aiming to document the source code of opensource projects, please feel free to contribute to our project.
 
 ## Architecture overview 
 
-Greenplum is a typical share-nothing architecture MPP data base, it has one **master** and multiple **segments**, actual data is distributed by Hash or round robin in segments, and master is the interface to the client. 
+Greenplum is a typical share-nothing architecture MPP database, it has one **master** and multiple **segments**, actual data is distributed by Hash or round robin across segments, and the master is the interface to the client. 
 
 - **Nodes**
 
     - _Master node_
 
-         There is on one Primary master, master has one Standby, master ships its WAL to its standby for HA.
+         There is on one Primary master, the master has one Standby, master ships its WAL to its standby for HA.
 
     - _Segment node_
 
@@ -60,7 +59,7 @@ Greenplum is a typical share-nothing architecture MPP data base, it has one **ma
     
      - _Motion_
 
-         In Greenplum, because data is distributed in segments, so segments need to ship their own portion of data to other nodes, it introduces an operator called Motion into the plan tree, the Motion operator is used to send or receive tuples from other nodes, it has three type of operations: Gather motion, Broadcast motion, Redistribute motion. 
+         In Greenplum, because data is distributed across segments, so segments need to ship their own portion of data to other nodes, it introduces an operator called **Motion** into the plan tree, the Motion operator is used to send or receive tuples from other nodes, it has three type of operations: Gather motion, Broadcast motion, Redistribute motion. 
 
      - _Slice_ 
 
@@ -220,34 +219,34 @@ Comparing with Postgres, Greenplum had added three messages, all of them are rel
         /*
          * Start up a transaction command.
          */
-         start_xact_command();
+        start_xact_command();
 
          /*
-         * Do basic parsing of the query or queries 
-         */
-         parsetree_list = pg_parse_query(query_string);	
+          * Do basic parsing of the query or queries 
+          */
+        parsetree_list = pg_parse_query(query_string);	
 	
          /*
           * OK to analyze, rewrite, and plan this query.
           */	
-         querytree_list = pg_analyze_and_rewrite(parsetree, query_string,NULL, 0);
+        querytree_list = pg_analyze_and_rewrite(parsetree, query_string,NULL, 0);
 
          plantree_list = pg_plan_queries(querytree_list, NULL, false);	
 
          /*
          * Create unnamed portal to run the query or queries in.
          */
-         portal = CreatePortal("", true, true);	
+        portal = CreatePortal("", true, true);	
 	
          /* 
           * Start the portal. 
           */
-         PortalStart();
+        PortalStart();
 					
         /*
          * Now we can create the destination receiver object.
          */
-         receiver = CreateDestReceiver(dest, portal);
+        receiver = CreateDestReceiver(dest, portal);
 
          /*
           * Run the portal to completion, and then drop it (and the receiver).
@@ -418,6 +417,23 @@ typedef struct Query
 ```
 
 ## QD performs query planning
+
+```SQL
+  SELECT 
+  FROM pgbench_branches b
+       JOIN pgbench_accounts a ON b.bid = a.bid
+       ORDER BY a.aid;
+```
+
+```
+       Sort
+        |
+     Hash Join 
+   |           |
+ SeqScan(a)  SeqScan(b) 
+
+```
+
 ```
 For example:
 
